@@ -17,9 +17,10 @@ import re
 import time
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
+from typing import Callable
 
 import config
-from rag.llm import LLM
+from rag.llm import LLM, LLMResult
 from rag.store import Retrieved, VectorStore
 
 REFUSAL = "I couldn't find this in the indexed documents, so I won't guess."
@@ -133,9 +134,14 @@ class RAGPipeline:
         self.min_similarity = min_similarity
         self.log_path = log_path
 
-    def ask(self, question: str, log: bool = True) -> Answer:
+    def ask(self, question: str, log: bool = True, sources: list[str] | None = None,
+            on_token: Callable[[str], None] | None = None) -> Answer:
+        """Answer `question`.
+        sources:  restrict retrieval to these file names (None = all documents)
+        on_token: called with the text generated so far, for streaming UIs
+        """
         t0 = time.perf_counter()
-        hits = self.store.query(question, k=self.top_k)
+        hits = self.store.query(question, k=self.top_k, sources=sources)
         t_retrieval = time.perf_counter() - t0
 
         evidence = [h for h in hits if h.similarity >= self.min_similarity]
@@ -149,6 +155,7 @@ class RAGPipeline:
             "n_retrieved": len(hits),
             "n_evidence": len(evidence),
             "model": self.llm.model,
+            "scope": ",".join(sources) if sources else "all",
         }
 
         if not evidence:
@@ -158,7 +165,18 @@ class RAGPipeline:
         user_prompt = f"SOURCES:\n\n{format_context(evidence)}\n\nQUESTION: {question}\n\nANSWER (with [S#] citations):"
         t1 = time.perf_counter()
         try:
-            res = self.llm.generate(SYSTEM_PROMPT, user_prompt)
+            if on_token is None:
+                res = self.llm.generate(SYSTEM_PROMPT, user_prompt)
+            else:
+                text, first = "", None
+                for piece in self.llm.stream(SYSTEM_PROMPT, user_prompt):
+                    if first is None:
+                        first = time.perf_counter()
+                    text += piece
+                    on_token(text)
+                res = LLMResult(text, *self.llm.last_usage)
+                if first is not None:
+                    metrics["ttft_ms"] = round((first - t1) * 1000, 1)
         except Exception as e:  # LLM down, model missing, ...
             metrics["error"] = str(e)
             ans = Answer(question, f"LLM error: {e}", "error", retrieved=retrieved, metrics=metrics)

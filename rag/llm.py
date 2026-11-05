@@ -1,7 +1,10 @@
-"""Thin LLM client: local Ollama by default, or any OpenAI-compatible API."""
+"""Thin LLM client: local Ollama by default, or any OpenAI-compatible API.
+Supports both one-shot `generate` and token `stream`ing."""
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
+from typing import Iterator
 
 import requests
 
@@ -21,28 +24,63 @@ class LLM:
         self.backend = backend
         self.model = model
         self.temperature = temperature
+        self.last_usage: tuple[int | None, int | None] = (None, None)
+
+    @staticmethod
+    def _messages(system: str, user: str) -> list[dict]:
+        return [{"role": "system", "content": system}, {"role": "user", "content": user}]
 
     def generate(self, system: str, user: str) -> LLMResult:
-        messages = [{"role": "system", "content": system}, {"role": "user", "content": user}]
+        text = "".join(self.stream(system, user))
+        return LLMResult(text, *self.last_usage)
+
+    def stream(self, system: str, user: str) -> Iterator[str]:
+        """Yield the answer piece by piece. Token counts land in `self.last_usage`."""
+        self.last_usage = (None, None)
+        messages = self._messages(system, user)
+
         if self.backend == "ollama":
-            r = requests.post(f"{config.OLLAMA_URL}/api/chat", json={
-                "model": self.model, "messages": messages, "stream": False,
+            with requests.post(f"{config.OLLAMA_URL}/api/chat", json={
+                "model": self.model, "messages": messages, "stream": True,
                 "options": {"temperature": self.temperature},
-            }, timeout=600)
-            r.raise_for_status()
-            j = r.json()
-            return LLMResult(j["message"]["content"], j.get("prompt_eval_count"), j.get("eval_count"))
+            }, stream=True, timeout=600) as r:
+                r.raise_for_status()
+                for line in r.iter_lines():
+                    if not line:
+                        continue
+                    j = json.loads(line)
+                    if j.get("error"):
+                        raise RuntimeError(j["error"])
+                    piece = j.get("message", {}).get("content", "")
+                    if piece:
+                        yield piece
+                    if j.get("done"):
+                        self.last_usage = (j.get("prompt_eval_count"), j.get("eval_count"))
+            return
 
         if self.backend == "openai":
-            r = requests.post(f"{config.OPENAI_BASE_URL.rstrip('/')}/chat/completions",
-                              headers={"Authorization": f"Bearer {config.OPENAI_API_KEY}"},
-                              json={"model": self.model, "messages": messages,
-                                    "temperature": self.temperature}, timeout=600)
-            r.raise_for_status()
-            j = r.json()
-            usage = j.get("usage", {})
-            return LLMResult(j["choices"][0]["message"]["content"],
-                             usage.get("prompt_tokens"), usage.get("completion_tokens"))
+            with requests.post(f"{config.OPENAI_BASE_URL.rstrip('/')}/chat/completions",
+                               headers={"Authorization": f"Bearer {config.OPENAI_API_KEY}"},
+                               json={"model": self.model, "messages": messages, "stream": True,
+                                     "temperature": self.temperature,
+                                     "stream_options": {"include_usage": True}},
+                               stream=True, timeout=600) as r:
+                r.raise_for_status()
+                for raw in r.iter_lines():
+                    line = raw.decode("utf-8") if isinstance(raw, bytes) else raw
+                    if not line.startswith("data:"):
+                        continue
+                    data = line[5:].strip()
+                    if data == "[DONE]":
+                        break
+                    j = json.loads(data)
+                    if j.get("usage"):
+                        self.last_usage = (j["usage"].get("prompt_tokens"), j["usage"].get("completion_tokens"))
+                    for ch in j.get("choices", []):
+                        piece = (ch.get("delta") or {}).get("content")
+                        if piece:
+                            yield piece
+            return
 
         raise ValueError(f"Unknown LLM backend: {self.backend}")
 

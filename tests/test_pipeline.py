@@ -44,9 +44,16 @@ class FakeLLM:
     def __init__(self, reply):
         self.reply = reply
 
+    last_usage = (None, None)
+
     def generate(self, system, user):
         self.last_prompt = user
         return LLMResult(self.reply(user) if callable(self.reply) else self.reply)
+
+    def stream(self, system, user):
+        text = self.generate(system, user).text
+        for i in range(0, len(text), 7):
+            yield text[i:i + 7]
 
 
 @pytest.fixture(scope="module")
@@ -132,3 +139,29 @@ def test_unsupported_numbers_flagged(store):
 def test_highlight_renders_png():
     png = render_highlighted_page(DOCS / "sample_club_rulebook.pdf", 1, [4])
     assert png[:8] == b"\x89PNG\r\n\x1a\n"
+
+
+def test_streaming_matches_final_answer(store):
+    reply = "The annual membership fee is Rs. 500, payable before 31 August. [S1]"
+    p = RAGPipeline(store=store, llm=FakeLLM(reply), min_similarity=0.0, log_path=None)
+    seen = []
+    ans = p.ask("What is the annual membership fee?", on_token=seen.append)
+    assert len(seen) > 3 and seen[-1] == reply
+    assert ans.status == "answered" and "ttft_ms" in ans.metrics
+
+
+def test_document_filter_restricts_retrieval(store):
+    hits = store.query("membership fee", k=5, sources=["sample_course_guidelines.pdf"])
+    assert hits and all(h.chunk.source == "sample_course_guidelines.pdf" for h in hits)
+    both = store.query("fee", k=20, sources=["sample_course_guidelines.pdf", "sample_club_rulebook.pdf"])
+    assert {h.chunk.source for h in both} == {"sample_course_guidelines.pdf", "sample_club_rulebook.pdf"}
+
+
+def test_export_markdown_and_pdf(store):
+    from rag.report import to_markdown, to_pdf
+    p = RAGPipeline(store=store, llm=FakeLLM("The annual membership fee is Rs. 500. [S1]"),
+                    min_similarity=0.0, log_path=None)
+    hist = [("What is the fee?", p.ask("What is the annual membership fee?"))]
+    md = to_markdown(hist)
+    assert "Q1. What is the fee?" in md and "page 1" in md and "> 1.2 The annual membership fee" in md
+    assert to_pdf(hist)[:5] == b"%PDF-"

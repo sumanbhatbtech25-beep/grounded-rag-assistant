@@ -87,12 +87,20 @@ class VectorStore:
             counts[m["source"]] = counts.get(m["source"], 0) + 1
         return dict(sorted(counts.items()))
 
-    def query(self, text: str, k: int = config.TOP_K) -> list[Retrieved]:
-        if self.count() == 0:
+    def query(self, text: str, k: int = config.TOP_K, sources: list[str] | None = None) -> list[Retrieved]:
+        """Top-k chunks for `text`, optionally restricted to the given file names."""
+        if sources:
+            counts = self.sources()
+            available = sum(counts.get(s, 0) for s in sources)
+            where = {"source": sources[0]} if len(sources) == 1 else {"source": {"$in": list(sources)}}
+        else:
+            available, where = self.count(), None
+        if available == 0:
             return []
         res = self.col.query(
             query_embeddings=self.embedder([text]),
-            n_results=min(k, self.count()),
+            n_results=min(k, available),
+            where=where,
             include=["documents", "metadatas", "distances"],
         )
         out = []

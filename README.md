@@ -18,6 +18,11 @@ Everything runs on your machine: **ChromaDB** for vectors, **Ollama** for the LL
 | 🔒 **Fully local** | Ollama + local embeddings. No document leaves your laptop. An OpenAI-compatible API is optional. |
 | 📊 **Latency & quality dashboard** | Retrieval vs generation latency per query, p95 latency, answer/refusal rate, grounding score. |
 | 🧪 **Evaluation suite** | Retrieval hit@k, MRR, citation accuracy, refusal accuracy on unanswerable questions, keyword recall. |
+| ⚡ **Streaming answers** | Answers appear word by word; time-to-first-word is tracked on the dashboard. |
+| 🔗 **Clickable citations** | Click an `S1` tag to jump to that source and open the PDF page with the line highlighted. |
+| 🔎 **Document filter** | Restrict a question to one or more chosen PDFs. |
+| 📤 **Export** | Download the conversation, with every citation and quoted line, as a PDF report or Markdown. |
+| 🌙 **Dark mode** | One toggle in the sidebar; remembered in the URL (`?theme=dark`). |
 | 🖥️ **CLI too** | `python cli.py ingest / ask / eval` |
 
 ## 🏗️ Architecture
@@ -141,6 +146,7 @@ All settings live in `config.py` and can be overridden with environment variable
 │   ├── llm.py             # Ollama / OpenAI-compatible client
 │   ├── pipeline.py        # retrieve -> prompt -> generate -> verify -> pinpoint
 │   ├── highlight.py       # render page PNG with cited lines highlighted
+│   ├── report.py          # export conversation to PDF / Markdown
 │   └── evaluation.py      # eval runner + query-log analytics
 ├── docs/                  # your PDFs (2 fictional samples included)
 ├── eval/questions.json    # evaluation set
@@ -151,7 +157,6 @@ All settings live in `config.py` and can be overridden with environment variable
 ## 🛣️ Possible extensions
 - OCR for scanned PDFs (Tesseract)
 - Hybrid search (BM25 + vectors) and a cross-encoder re-ranker
-- Streaming answers
 - Multi-language documents
 
 ---
