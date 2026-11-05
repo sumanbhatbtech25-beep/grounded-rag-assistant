@@ -1,7 +1,9 @@
-# 📑 Grounded RAG Assistant
+# 📑 CiteSight — Grounded RAG Assistant
 
 **A local, source-citing document assistant that refuses to hallucinate.**
 Ask questions about your own PDFs (syllabus guidelines, municipal bylaws, club rules), and every answer shows the **exact PDF, page and line number** it came from, with the line highlighted on the page. If the documents don't contain the answer, the assistant says so instead of guessing.
+
+![CiteSight answering a question with a page- and line-level citation](assets/screenshot.png)
 
 Everything runs on your machine: **ChromaDB** for vectors, **Ollama** for the LLM, **PyMuPDF** for PDF parsing and highlighting, **Streamlit** for the UI.
 
