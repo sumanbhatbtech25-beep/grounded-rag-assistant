@@ -1,0 +1,23 @@
+[
+  {"question": "What is the annual membership fee of the club?", "answerable": true,
+   "expected_source": "sample_club_rulebook.pdf", "expected_page": 1, "expected_keywords": ["500"]},
+  {"question": "When are general body meetings held?", "answerable": true,
+   "expected_source": "sample_club_rulebook.pdf", "expected_page": 1, "expected_keywords": ["first friday"]},
+  {"question": "Who can contest in the club elections?", "answerable": true,
+   "expected_source": "sample_club_rulebook.pdf", "expected_page": 2, "expected_keywords": ["3"]},
+  {"question": "How many days before an event must the proposal be submitted?", "answerable": true,
+   "expected_source": "sample_club_rulebook.pdf", "expected_page": 2, "expected_keywords": ["21"]},
+  {"question": "What happens after a second code of conduct violation?", "answerable": true,
+   "expected_source": "sample_club_rulebook.pdf", "expected_page": 3, "expected_keywords": ["suspension"]},
+  {"question": "How are the CIE marks of CS2041 split up?", "answerable": true,
+   "expected_source": "sample_course_guidelines.pdf", "expected_page": 1, "expected_keywords": ["15", "mini project"]},
+  {"question": "What is the minimum attendance needed to write the SEE?", "answerable": true,
+   "expected_source": "sample_course_guidelines.pdf", "expected_page": 1, "expected_keywords": ["75"]},
+  {"question": "What is the penalty for submitting a lab record late?", "answerable": true,
+   "expected_source": "sample_course_guidelines.pdf", "expected_page": 2, "expected_keywords": ["10 percent"]},
+  {"question": "Which unit covers graphs?", "answerable": true,
+   "expected_source": "sample_course_guidelines.pdf", "expected_page": 2, "expected_keywords": ["unit 4"]},
+  {"question": "Who won the FIFA World Cup in 2018?", "answerable": false},
+  {"question": "What is the parking fee at the university hostel?", "answerable": false},
+  {"question": "Explain how quantum computers break RSA encryption.", "answerable": false}
+]
