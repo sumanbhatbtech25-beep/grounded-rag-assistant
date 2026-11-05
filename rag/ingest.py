@@ -75,12 +75,40 @@ def page_lines(page: "fitz.Page") -> list[Line]:
     ]
 
 
-def extract_lines(pdf_path: str | Path) -> list[Line]:
+class DamagedPDFError(ValueError):
+    """Raised when a PDF (or one of its pages) can't be read."""
+
+
+def _doc_lines(doc: "fitz.Document") -> list[Line]:
     out: list[Line] = []
-    with fitz.open(pdf_path) as doc:
-        for page in doc:
+    for page in doc:
+        try:
             out.extend(page_lines(page))
+        except Exception as e:  # broken content stream, bad font, ...
+            raise DamagedPDFError(f"page {page.number + 1} is damaged ({type(e).__name__})") from e
     return out
+
+
+def extract_lines(pdf_path: str | Path) -> list[Line]:
+    try:
+        with fitz.open(pdf_path) as doc:
+            return _doc_lines(doc)
+    except DamagedPDFError:
+        raise
+    except Exception as e:
+        raise DamagedPDFError(f"cannot be opened ({type(e).__name__})") from e
+
+
+def load_pdf_bytes(data: bytes, name: str, size: int = 8, overlap: int = 2) -> list[Chunk]:
+    """Parse a PDF fully in memory. Raises DamagedPDFError if any part is unreadable."""
+    try:
+        with fitz.open(stream=data, filetype="pdf") as doc:
+            lines = _doc_lines(doc)
+    except DamagedPDFError:
+        raise
+    except Exception as e:
+        raise DamagedPDFError(f"cannot be opened ({type(e).__name__})") from e
+    return chunk_lines(lines, name, size=size, overlap=overlap)
 
 
 def chunk_lines(lines: list[Line], source: str, size: int = 8, overlap: int = 2) -> list[Chunk]:

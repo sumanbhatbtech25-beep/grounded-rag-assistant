@@ -94,5 +94,12 @@ def audit(event: str, user: str | None = None, path: Path = config.AUDIT_LOG, **
 def read_audit(path: Path = config.AUDIT_LOG, limit: int = 300) -> list[dict]:
     if not Path(path).exists():
         return []
-    lines = Path(path).read_text(encoding="utf-8").splitlines()[-limit:]
-    return [json.loads(l) for l in reversed(lines) if l.strip()]
+    out = []
+    for line in reversed(Path(path).read_text(encoding="utf-8", errors="replace").splitlines()[-limit:]):
+        try:
+            rec = json.loads(line)
+            if isinstance(rec, dict) and "event" in rec and "ts" in rec:
+                out.append(rec)
+        except ValueError:
+            continue
+    return out

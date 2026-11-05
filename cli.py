@@ -12,7 +12,7 @@ import json
 
 import config
 from rag.evaluation import run_eval
-from rag.indexer import index_folder
+from rag.indexer import index_folder_report
 from rag.pipeline import RAGPipeline
 from rag.store import VectorStore
 
@@ -36,6 +36,14 @@ def main() -> None:
         from rag.auth import AuthError, UserStore
         from rag.security import audit
         users = UserStore()
+        if users.is_damaged():
+            if args.cmd == "add-user" and args.admin:
+                moved = users.backup_damaged()
+                print(f"The account file was damaged; it was moved to {moved.name}. Creating a fresh one.")
+                audit("users_file_reset", "cli")
+            else:
+                raise SystemExit('The account file is damaged. Recreate the admin with:\n'
+                                 '  python cli.py add-user "<name>" --admin')
         pw = getpass.getpass("New password: ")
         if pw != getpass.getpass("Confirm password: "):
             raise SystemExit("Passwords don't match.")
@@ -44,17 +52,24 @@ def main() -> None:
                 users.add_user(args.name, pw, "admin" if args.admin else "viewer")
                 audit("user_created", "cli", target=args.name)
             else:
-                users.set_password(args.name.lower(), pw)
+                users.set_password(args.name, pw)
                 audit("password_reset", "cli", target=args.name)
         except AuthError as e:
             raise SystemExit(str(e))
         print("Done.")
         return
 
-    store = VectorStore()
+    try:
+        store = VectorStore()
+    except Exception as e:
+        raise SystemExit(f"Could not open the search index ({type(e).__name__}). It may be damaged; "
+                         "start the app and use 'Rebuild index', or delete the data/chroma folder.")
     if args.cmd == "ingest":
-        for name, n in index_folder(store, args.folder).items():
-            print(f"{name}: {n} chunks" + ("" if n else "  (no text - scanned PDF?)"))
+        for r in index_folder_report(store, args.folder):
+            if r.ok:
+                print(f"{r.name}: {r.passages} chunks" + ("" if r.passages else "  (no text - scanned PDF?)"))
+            else:
+                print(f"{r.name}: SKIPPED, damaged ({r.reason}). Moved to docs/_rejected/")
         print(f"Total chunks in index: {store.count()}")
     elif args.cmd == "ask":
         ans = RAGPipeline(store=store).ask(args.question)

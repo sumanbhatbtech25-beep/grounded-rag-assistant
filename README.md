@@ -56,12 +56,13 @@ flowchart LR
 
 | Protection | How it works |
 |---|---|
-| **Sign-in** | First launch asks you to create an admin account. Passwords are stored only as salted PBKDF2-SHA256 hashes (240,000 rounds) in `data/users.json`, which is git-ignored. |
+| **Sign-in** | First launch asks you to create an admin account (names like *Suman Bhat* work; capital letters don't matter). Passwords are stored only as salted PBKDF2-SHA256 hashes (240,000 rounds) in `data/users.json`, which is git-ignored. |
 | **Roles** | `viewer` can ask questions and see the dashboard. `admin` can also add/remove documents, run evaluations, manage users and read the audit log (🛡️ Security tab). |
 | **Brute-force lockout** | 5 wrong passwords lock the account for 5 minutes. An admin can unlock it early. |
 | **Session timeout** | Signed out automatically after 30 minutes of inactivity. |
 | **Prompt-injection guard** | Document passages that try to instruct the model ("ignore previous instructions…") are detected and never sent to the LLM; the UI shows a warning. Sources are also fenced as untrusted data in the prompt. |
 | **Upload checks** | Only real, unencrypted PDFs, max 25 MB / 500 pages; file names are sanitised (no path traversal). |
+| **Damaged-file protection** | Every page is test-read in memory *before* anything is saved. A damaged, truncated, fake or text-less PDF is rejected and nothing changes. A file is saved to `docs/` only after it was indexed successfully, and a failed re-index rolls back. On re-index/startup, damaged files already in `docs/` are moved to `docs/_rejected/` (with a reason file) instead of breaking the app. Damaged log lines, evaluation results, account file or search index are detected and handled with a clear recovery message. |
 | **Private logs** | Emails, phone and ID numbers are masked in the query and audit logs. |
 | **Audit log** | Sign-ins, failed attempts, uploads, deletions, user changes, index resets → `data/audit.jsonl`. |
 | **Local-only server** | `.streamlit/config.toml` binds to `localhost`, so other devices on your network can't open the app. XSRF protection is on. |
@@ -69,7 +70,7 @@ flowchart LR
 
 Locked out of the admin account? Reset it from a terminal:
 ```bash
-python cli.py reset-password suman
+python cli.py reset-password "Suman Bhat"
 ```
 Other accounts can also be created from the terminal: `python cli.py add-user NAME [--admin]`.
 Limits are configurable through environment variables (`RAG_MAX_UPLOAD_MB`, `RAG_LOGIN_MAX_ATTEMPTS`, `RAG_LOCKOUT_MINUTES`, `RAG_SESSION_TIMEOUT_MINUTES`, `RAG_REDACT_LOGS`, `RAG_INJECTION_GUARD`).

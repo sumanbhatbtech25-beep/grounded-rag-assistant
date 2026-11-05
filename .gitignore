@@ -10,6 +10,10 @@ env/
 data/*
 !data/.gitkeep
 
+# Damaged PDFs moved aside by the indexer, and half-written uploads
+docs/_rejected/
+docs/.*.part
+
 # Editors / OS
 .vscode/
 .idea/

@@ -24,10 +24,21 @@ from rag.pipeline import RAGPipeline
 def load_query_log(path: Path = config.QUERY_LOG) -> pd.DataFrame:
     if not Path(path).exists():
         return pd.DataFrame()
-    rows = [json.loads(l) for l in Path(path).read_text(encoding="utf-8").splitlines() if l.strip()]
+    rows = []
+    for line in Path(path).read_text(encoding="utf-8", errors="replace").splitlines():
+        try:  # a damaged line (e.g. power cut mid-write) is skipped, not fatal
+            rec = json.loads(line)
+            if isinstance(rec, dict) and "ts" in rec and "status" in rec:
+                rows.append(rec)
+        except ValueError:
+            continue
     df = pd.DataFrame(rows)
     if not df.empty:
-        df["ts"] = pd.to_datetime(df["ts"])
+        df["ts"] = pd.to_datetime(df["ts"], errors="coerce", utc=True)
+        for col in ("total_ms", "retrieval_ms", "generation_ms", "grounding", "top_similarity", "ttft_ms",
+                    "quarantined"):
+            if col in df:
+                df[col] = pd.to_numeric(df[col], errors="coerce")
     return df
 
 
@@ -36,6 +47,16 @@ def _p95(xs: list[float]) -> float:
         return 0.0
     xs = sorted(xs)
     return xs[min(len(xs) - 1, int(round(0.95 * (len(xs) - 1))))]
+
+
+def load_eval_results(path: Path = config.EVAL_RESULTS) -> dict | None:
+    """Last evaluation results, or None if missing/damaged."""
+    try:
+        res = json.loads(Path(path).read_text(encoding="utf-8"))
+        res["summary"]["model"], res["rows"][0]  # basic shape check
+        return res
+    except Exception:
+        return None
 
 
 def run_eval(pipeline: RAGPipeline, eval_path: Path = config.EVAL_SET,

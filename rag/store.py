@@ -68,6 +68,27 @@ class VectorStore:
             )
         return len(chunks)
 
+    def replace_source(self, source: str, chunks: list[Chunk]) -> int:
+        """Swap a document's passages in one step. New passages are written first and the
+        old ones pruned afterwards, so a failure never leaves the document half-indexed:
+        on error the new passages are removed again and the exception is re-raised."""
+        old_ids = set(self.col.get(where={"source": source}, include=[])["ids"])
+        new_ids = {c.id for c in chunks}
+        try:
+            self.add(chunks)
+        except Exception:
+            added = list(new_ids - old_ids)
+            if added:
+                try:
+                    self.col.delete(ids=added)
+                except Exception:
+                    pass
+            raise
+        stale = list(old_ids - new_ids)
+        if stale:
+            self.col.delete(ids=stale)
+        return len(chunks)
+
     def delete_source(self, source: str) -> None:
         self.col.delete(where={"source": source})
 

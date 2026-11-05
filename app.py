@@ -14,14 +14,14 @@ import plotly.graph_objects as go
 import streamlit as st
 
 import config
-from rag.evaluation import load_query_log, run_eval
+from rag.evaluation import load_eval_results, load_query_log, run_eval
 from rag.highlight import render_highlighted_page
 from rag.indexer import index_folder, index_pdf
 from rag.llm import LLM, ollama_models
 from rag.pipeline import Answer, RAGPipeline
 from rag.report import to_markdown, to_pdf
-from rag.auth import ROLES, AuthError, UserStore
-from rag.indexer import index_pdf_with_report
+from rag.auth import ROLES, USERNAME_RE, USERNAME_RULES, AuthError, UserStore, user_key
+from rag.indexer import index_folder_report, safe_add_pdf
 from rag.security import audit, read_audit, validate_pdf
 from rag.store import Embedder, VectorStore
 import time
@@ -248,10 +248,15 @@ def _sign_in(username: str, role: str) -> None:
     st.session_state.history = []
 
 
+def _rule(ok: bool, text: str) -> str:
+    colour = "#2E9E6E" if ok else "var(--muted)"
+    return f'<div style="color:{colour};font-size:0.84rem;margin:2px 0">{"✓" if ok else "○"} {text}</div>'
+
+
 def auth_screen() -> None:
     st.markdown(AUTH_CSS, unsafe_allow_html=True)
     first_run = not users.has_users()
-    _, mid, _ = st.columns([1, 1.2, 1])
+    _, mid, _ = st.columns([1, 1.25, 1])
     with mid:
         st.markdown(
             '<div class="auth-head"><div class="mark">C</div>'
@@ -260,37 +265,75 @@ def auth_screen() -> None:
             + "</div>", unsafe_allow_html=True)
         if msg := st.session_state.pop("auth_msg", None):
             st.info(msg, icon=":material/info:")
+
         if first_run:
-            with st.form("setup"):
-                u = st.text_input("Admin username", placeholder="e.g. suman")
-                p1 = st.text_input("Password", type="password", help="At least 8 characters with a letter and a number.")
+            with st.container(border=True):
+                u = st.text_input("Your name / username", placeholder="e.g. Suman Bhat", max_chars=32)
+                p1 = st.text_input("Password", type="password")
                 p2 = st.text_input("Confirm password", type="password")
-                if st.form_submit_button("Create admin account", type="primary", width="stretch"):
-                    if p1 != p2:
-                        st.error("Passwords don't match.")
-                    else:
-                        try:
-                            users.add_user(u, p1, "admin")
-                            audit("admin_created", u.strip().lower())
-                            _sign_in(u.strip().lower(), "admin")
-                            st.rerun()
-                        except AuthError as e:
-                            st.error(str(e))
+                key = user_key(u)
+                checks = [
+                    (bool(USERNAME_RE.match(key)), f"Username: {USERNAME_RULES}"),
+                    (len(p1) >= 8, "Password: at least 8 characters"),
+                    (bool(re.search(r"[A-Za-z]", p1)) and bool(re.search(r"\d", p1)),
+                     "Password: contains a letter and a number"),
+                    (bool(p1) and p1 == p2, "Passwords match"),
+                ]
+                st.markdown("".join(_rule(ok, t) for ok, t in checks), unsafe_allow_html=True)
+                st.write("")
+                ready = all(ok for ok, _ in checks)
+                if st.button("Create admin account", type="primary", width="stretch", disabled=not ready):
+                    try:
+                        users.add_user(u, p1, "admin")
+                        audit("admin_created", key)
+                        _sign_in(key, "admin")
+                        st.rerun()
+                    except AuthError as e:
+                        st.error(str(e))
+                st.caption("Press Enter after typing in a box to update the checklist. "
+                           "You'll sign in with this name (capital letters don't matter).")
         else:
             with st.form("login"):
-                u = st.text_input("Username", autocomplete="username")
+                u = st.text_input("Username", autocomplete="username", placeholder="e.g. Suman Bhat")
                 p = st.text_input("Password", type="password", autocomplete="current-password")
                 if st.form_submit_button("Sign in", type="primary", width="stretch"):
-                    role, msg = users.verify(u, p)
-                    if role:
-                        audit("login_success", u.strip().lower())
-                        _sign_in(u.strip().lower(), role)
-                        st.rerun()
+                    if not u.strip() or not p:
+                        st.error("Enter your username and password.")
                     else:
-                        audit("login_failed", u.strip().lower()[:40], reason=msg.split(".")[0])
-                        st.error(msg)
+                        role, msg = users.verify(u, p)
+                        if role:
+                            audit("login_success", user_key(u))
+                            _sign_in(user_key(u), role)
+                            st.rerun()
+                        else:
+                            audit("login_failed", user_key(u)[:40], reason=msg.split(".")[0])
+                            st.error(msg)
+            st.caption("Forgot the admin password? In the project folder run "
+                       "`.venv\\Scripts\\python cli.py reset-password \"<your name>\"`")
         st.markdown('<div class="auth-foot">🔒 Passwords are stored only as salted PBKDF2 hashes.</div>',
                     unsafe_allow_html=True)
+
+
+def damaged_users_screen() -> None:
+    st.markdown(AUTH_CSS, unsafe_allow_html=True)
+    _, mid, _ = st.columns([1, 1.6, 1])
+    with mid:
+        st.markdown('<div class="auth-head"><div class="mark">!</div><h2>Account file is damaged</h2>'
+                    '<p>CiteSight could not read <code>data/users.json</code>, so sign-in is paused '
+                    'to keep the app safe.</p></div>', unsafe_allow_html=True)
+        st.error("No one can sign in until the account file is repaired. Your documents and index are not affected.",
+                 icon=":material/gpp_bad:")
+        st.markdown("To recreate the admin account, stop the app (**Ctrl+C**) and run this in the project folder:")
+        st.code('.venv\\Scripts\\python cli.py add-user "Suman Bhat" --admin', language="powershell")
+        st.caption("The damaged file is kept as data/users.damaged-<date>.json so nothing is lost.")
+
+
+if users.is_damaged():
+    if not st.session_state.get("_damage_logged"):
+        audit("users_file_damaged")
+        st.session_state._damage_logged = True
+    damaged_users_screen()
+    st.stop()
 
 
 auth = st.session_state.get("auth")
@@ -311,6 +354,7 @@ if not auth:
 
 st.session_state.last_active = time.time()
 USER, ROLE = auth["user"], users.role_of(auth["user"])
+USER_DISPLAY = users.display_name(USER)
 IS_ADMIN = ROLE == "admin"
 
 
@@ -333,8 +377,8 @@ def _toggle_theme():
 
 
 with st.sidebar:
-    st.markdown(f'<div class="sb-user"><span class="avatar">{html.escape(USER[:1].upper())}</span>'
-                f'<div><div class="name">{html.escape(USER)}</div><div class="role">{ROLE}</div></div></div>',
+    st.markdown(f'<div class="sb-user"><span class="avatar">{html.escape(USER_DISPLAY[:1].upper())}</span>'
+                f'<div><div class="name">{html.escape(USER_DISPLAY)}</div><div class="role">{ROLE}</div></div></div>',
                 unsafe_allow_html=True)
     a1, a2 = st.columns(2)
     with a1.popover("Account", width="stretch"):
@@ -403,10 +447,31 @@ with st.sidebar:
     st.markdown(f'<div class="sb-note">Embeddings · {emb}<br>Vector store · ChromaDB</div>',
                 unsafe_allow_html=True)
 
-store = get_store(config.EMBED_BACKEND, config.EMBED_MODEL)
+try:
+    store = get_store(config.EMBED_BACKEND, config.EMBED_MODEL)
+    sources = store.sources()  # touch the index so damage shows up here, not mid-page
+except Exception as e:
+    st.error(f"The search index could not be opened ({type(e).__name__}). It may be damaged. "
+             "Your PDFs in docs/ are safe; the index can be rebuilt from them.", icon=":material/database:")
+    if IS_ADMIN and st.button("Rebuild index from docs/", type="primary", icon=":material/build:"):
+        get_store.clear()
+        import gc, shutil
+        gc.collect()
+        backup = config.DATA_DIR / f"chroma.damaged-{time.strftime('%Y%m%d-%H%M%S')}"
+        try:
+            shutil.move(str(config.CHROMA_DIR), backup)
+        except OSError:
+            shutil.rmtree(config.CHROMA_DIR, ignore_errors=True)
+        fresh = get_store(config.EMBED_BACKEND, config.EMBED_MODEL)
+        with st.spinner("Rebuilding…"):
+            results = index_folder_report(fresh)
+        audit("index_rebuilt", USER, files=sum(r.ok for r in results))
+        st.rerun()
+    elif not IS_ADMIN:
+        st.info("Ask an admin to sign in and rebuild the index.")
+    st.stop()
 pipeline = RAGPipeline(store=store, llm=LLM(backend, model), top_k=top_k, min_similarity=min_sim)
 pipeline.user = USER
-sources = store.sources()
 
 # ------------------------------------------------------------------ hero
 online = backend != "ollama" or bool(models)
@@ -463,7 +528,13 @@ def source_card(c, key: str) -> str:
     pdf = config.DOCS_DIR / c.source
     page_html, open_link = "", ""
     if pdf.exists():
-        b64 = page_b64(str(pdf), c.page, tuple(hl), pdf.stat().st_mtime)
+        try:
+            b64 = page_b64(str(pdf), c.page, tuple(hl), pdf.stat().st_mtime)
+        except Exception:
+            b64 = None
+    if pdf.exists() and b64 is None:
+        open_link = '<span class="src-loc">page preview unavailable (file damaged?)</span>'
+    elif pdf.exists():
         page_html = (f'<div class="pagebox"><img alt="{html.escape(c.source)} page {c.page}" '
                      f'src="data:image/png;base64,{b64}"></div>')
         open_link = (f'<a class="open-link" href="#src-{key}-{c.sid}">View page {c.page} ↗</a>'
@@ -625,32 +696,31 @@ with tab_docs:
                                    icon=":material/upload_file:"):
                 for f in files:
                     data = f.getvalue()
-                    ok, reason, safe = validate_pdf(data, f.name)
-                    if not ok:
-                        flash("error", f"{f.name}: rejected ({reason}).")
-                        audit("upload_rejected", USER, file=safe, reason=reason)
+                    with st.spinner(f"Checking and indexing {f.name}…"):
+                        r = safe_add_pdf(store, data, f.name)
+                    if not r.ok:
+                        flash("error", f"{f.name}: not added: {r.reason}. Nothing was changed.")
+                        audit("upload_rejected", USER, file=r.name, reason=r.reason)
                         continue
-                    dest = config.DOCS_DIR / safe
-                    dest.write_bytes(data)
-                    with st.spinner(f"Indexing {safe}…"):
-                        n, flagged = index_pdf_with_report(store, dest)
-                    audit("document_added", USER, file=safe, passages=n, flagged=flagged,
+                    audit("document_added", USER, file=r.name, passages=r.passages, flagged=r.flagged,
                           size_kb=round(len(data) / 1024))
-                    if not n:
-                        flash("warning", f"{safe}: no text found (scanned PDF? run OCR first).")
-                    else:
-                        flash("success", f"{safe}: {n} passages indexed.")
-                    if flagged:
-                        flash("warning", f"{safe}: {flagged} passage(s) contain instruction-like text "
+                    flash("success", f"{r.name}: {r.passages} passages indexed.")
+                    if r.flagged:
+                        flash("warning", f"{r.name}: {r.flagged} passage(s) contain instruction-like text "
                                          "(possible prompt injection). They will never be shown to the model.")
                 st.rerun()
             st.write("")
             c1, c2 = st.columns(2)
             if c1.button("Re-index docs/", width="stretch", icon=":material/sync:"):
                 with st.spinner("Indexing…"):
-                    res = index_folder(store)
-                audit("reindex", USER, files=len(res))
-                flash("success", f"Indexed {len(res)} PDF(s), {sum(res.values())} passages.")
+                    results = index_folder_report(store)
+                good = [r for r in results if r.ok]
+                audit("reindex", USER, files=len(good), rejected=len(results) - len(good))
+                flash("success", f"Indexed {len(good)} PDF(s), {sum(r.passages for r in good)} passages.")
+                for r in results:
+                    if not r.ok:
+                        flash("warning", f"{r.name}: damaged, so it was moved to docs/_rejected/ "
+                                         f"and left out ({r.reason}).")
                 st.rerun()
             if c2.button("Reset index", width="stretch", icon=":material/restart_alt:"):
                 store.reset()
@@ -741,8 +811,10 @@ with tab_eval:
         audit("evaluation_run", USER)
         with st.spinner("Running evaluation…"):
             run_eval(pipeline)
-    if config.EVAL_RESULTS.exists():
-        res = json.loads(config.EVAL_RESULTS.read_text(encoding="utf-8"))
+    res = load_eval_results()
+    if config.EVAL_RESULTS.exists() and res is None:
+        st.warning("The saved evaluation results are damaged and were ignored. Run the evaluation again.")
+    if res:
         s = res["summary"]
         pct = lambda v: "–" if v is None else f"{v:.0%}"
         k = st.columns(6)
@@ -795,11 +867,12 @@ if tab_sec is not None:
         left, right = st.columns([3, 2], gap="large")
         with left:
             st.subheader("Users")
-            st.dataframe(pd.DataFrame(all_users), width="stretch", hide_index=True,
+            st.dataframe(pd.DataFrame(all_users).drop(columns=["key"], errors="ignore"),
+                         width="stretch", hide_index=True,
                          column_config={"username": "User", "role": "Role", "created": "Created",
                                         "last_login": "Last sign-in",
                                         "locked": st.column_config.CheckboxColumn("Locked")})
-            others = [u["username"] for u in all_users if u["username"] != USER]
+            others = [u["username"] for u in all_users if u["key"] != USER]
             if others:
                 m1, m2 = st.columns([2, 3], vertical_alignment="bottom")
                 target = m1.selectbox("Manage user", others)
