@@ -3,8 +3,11 @@
     python cli.py ingest [folder]      index every PDF in docs/ (or a folder)
     python cli.py ask "question"       ask one question
     python cli.py eval                 run the evaluation set
+    python cli.py add-user NAME [--admin]   create an account
+    python cli.py reset-password NAME       set a new password (also unlocks the account)
 """
 import argparse
+import getpass
 import json
 
 import config
@@ -22,7 +25,31 @@ def main() -> None:
     a = sub.add_parser("ask")
     a.add_argument("question")
     sub.add_parser("eval")
+    u = sub.add_parser("add-user")
+    u.add_argument("name")
+    u.add_argument("--admin", action="store_true")
+    r = sub.add_parser("reset-password")
+    r.add_argument("name")
     args = p.parse_args()
+
+    if args.cmd in ("add-user", "reset-password"):
+        from rag.auth import AuthError, UserStore
+        from rag.security import audit
+        users = UserStore()
+        pw = getpass.getpass("New password: ")
+        if pw != getpass.getpass("Confirm password: "):
+            raise SystemExit("Passwords don't match.")
+        try:
+            if args.cmd == "add-user":
+                users.add_user(args.name, pw, "admin" if args.admin else "viewer")
+                audit("user_created", "cli", target=args.name)
+            else:
+                users.set_password(args.name.lower(), pw)
+                audit("password_reset", "cli", target=args.name)
+        except AuthError as e:
+            raise SystemExit(str(e))
+        print("Done.")
+        return
 
     store = VectorStore()
     if args.cmd == "ingest":

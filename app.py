@@ -20,7 +20,11 @@ from rag.indexer import index_folder, index_pdf
 from rag.llm import LLM, ollama_models
 from rag.pipeline import Answer, RAGPipeline
 from rag.report import to_markdown, to_pdf
+from rag.auth import ROLES, AuthError, UserStore
+from rag.indexer import index_pdf_with_report
+from rag.security import audit, read_audit, validate_pdf
 from rag.store import Embedder, VectorStore
+import time
 
 st.set_page_config(page_title="CiteSight · Grounded RAG Assistant", page_icon="📑",
                    layout="wide", initial_sidebar_state="expanded")
@@ -140,6 +144,16 @@ a.cite:hover {{background:{AMBER}; color:{NAVY_DARK} !important}}
 section[data-testid="stSidebar"] .sb-title {{font-family:'Source Serif 4',serif; font-size:1.15rem;
         font-weight:700; color:#fff; margin-bottom:4px}}
 section[data-testid="stSidebar"] .sb-note {{color:#9FB0C6; font-size:0.8rem}}
+.sb-user {{display:flex; gap:10px; align-items:center; background:#1D3350; border:1px solid #2A4466;
+           border-radius:12px; padding:10px 12px; margin-bottom:8px}}
+.sb-user .avatar {{width:34px; height:34px; border-radius:50%; background:{AMBER}; color:{NAVY_DARK};
+           display:flex; align-items:center; justify-content:center; font-weight:800}}
+.sb-user .name {{color:#fff; font-weight:600; font-size:0.92rem}}
+.sb-user .role {{color:#9FB0C6; font-size:0.75rem; text-transform:uppercase; letter-spacing:.06em}}
+.guard {{border:1px solid var(--line); background:var(--card); border-radius:12px; padding:12px 14px;
+         display:flex; gap:10px; align-items:flex-start; margin-bottom:8px; color:var(--ink); min-height:92px}}
+.guard .ok {{color:#2E9E6E; font-weight:800}}
+.guard small {{color:var(--muted); display:block}}
 </style>
 """, unsafe_allow_html=True)
 
@@ -213,6 +227,102 @@ def kpi(col, label: str, value: str, sub: str = "") -> None:
                  f'<div class="sub">{sub}&nbsp;</div></div>', unsafe_allow_html=True)
 
 
+# ------------------------------------------------------------------ authentication
+users = UserStore()
+AUTH_CSS = f"""<style>
+section[data-testid="stSidebar"], [data-testid="stSidebarCollapsedControl"] {{display:none}}
+.auth-head {{text-align:center; margin: 6vh 0 18px}}
+.auth-head .mark {{width:56px; height:56px; border-radius:14px; background:{AMBER}; color:{NAVY_DARK};
+   display:inline-flex; align-items:center; justify-content:center; font-weight:800; font-size:26px;
+   font-family:'Source Serif 4',serif; margin-bottom:10px}}
+.auth-head h2 {{margin:0; color:var(--ink) !important}}
+.auth-head p {{color:var(--muted); margin:4px 0 0}}
+[data-testid="stForm"] {{background:var(--card); border:1px solid var(--line) !important; border-radius:14px; padding:22px}}
+.auth-foot {{text-align:center; color:var(--muted); font-size:0.8rem; margin-top:12px}}
+</style>"""
+
+
+def _sign_in(username: str, role: str) -> None:
+    st.session_state.auth = {"user": username, "role": role}
+    st.session_state.last_active = time.time()
+    st.session_state.history = []
+
+
+def auth_screen() -> None:
+    st.markdown(AUTH_CSS, unsafe_allow_html=True)
+    first_run = not users.has_users()
+    _, mid, _ = st.columns([1, 1.2, 1])
+    with mid:
+        st.markdown(
+            '<div class="auth-head"><div class="mark">C</div>'
+            + ('<h2>Set up CiteSight</h2><p>Create the administrator account to get started.</p>' if first_run
+               else '<h2>Sign in to CiteSight</h2><p>Your documents stay on this machine.</p>')
+            + "</div>", unsafe_allow_html=True)
+        if msg := st.session_state.pop("auth_msg", None):
+            st.info(msg, icon=":material/info:")
+        if first_run:
+            with st.form("setup"):
+                u = st.text_input("Admin username", placeholder="e.g. suman")
+                p1 = st.text_input("Password", type="password", help="At least 8 characters with a letter and a number.")
+                p2 = st.text_input("Confirm password", type="password")
+                if st.form_submit_button("Create admin account", type="primary", width="stretch"):
+                    if p1 != p2:
+                        st.error("Passwords don't match.")
+                    else:
+                        try:
+                            users.add_user(u, p1, "admin")
+                            audit("admin_created", u.strip().lower())
+                            _sign_in(u.strip().lower(), "admin")
+                            st.rerun()
+                        except AuthError as e:
+                            st.error(str(e))
+        else:
+            with st.form("login"):
+                u = st.text_input("Username", autocomplete="username")
+                p = st.text_input("Password", type="password", autocomplete="current-password")
+                if st.form_submit_button("Sign in", type="primary", width="stretch"):
+                    role, msg = users.verify(u, p)
+                    if role:
+                        audit("login_success", u.strip().lower())
+                        _sign_in(u.strip().lower(), role)
+                        st.rerun()
+                    else:
+                        audit("login_failed", u.strip().lower()[:40], reason=msg.split(".")[0])
+                        st.error(msg)
+        st.markdown('<div class="auth-foot">🔒 Passwords are stored only as salted PBKDF2 hashes.</div>',
+                    unsafe_allow_html=True)
+
+
+auth = st.session_state.get("auth")
+if auth:
+    idle = time.time() - st.session_state.get("last_active", 0)
+    if idle > config.SESSION_TIMEOUT_MINUTES * 60:
+        audit("session_timeout", auth["user"])
+        for k in ("auth", "history"):
+            st.session_state.pop(k, None)
+        st.session_state.auth_msg = "You were signed out after a period of inactivity."
+        auth = None
+    elif users.role_of(auth["user"]) is None:  # account deleted meanwhile
+        st.session_state.pop("auth", None)
+        auth = None
+if not auth:
+    auth_screen()
+    st.stop()
+
+st.session_state.last_active = time.time()
+USER, ROLE = auth["user"], users.role_of(auth["user"])
+IS_ADMIN = ROLE == "admin"
+
+
+def flash(kind: str, text: str) -> None:
+    st.session_state.setdefault("flash", []).append((kind, text))
+
+
+def show_flash() -> None:
+    for kind, text in st.session_state.pop("flash", []):
+        {"success": st.success, "warning": st.warning, "error": st.error}.get(kind, st.info)(text)
+
+
 # ------------------------------------------------------------------ sidebar
 def _toggle_theme():
     st.session_state.dark = st.session_state.dark_toggle
@@ -223,6 +333,32 @@ def _toggle_theme():
 
 
 with st.sidebar:
+    st.markdown(f'<div class="sb-user"><span class="avatar">{html.escape(USER[:1].upper())}</span>'
+                f'<div><div class="name">{html.escape(USER)}</div><div class="role">{ROLE}</div></div></div>',
+                unsafe_allow_html=True)
+    a1, a2 = st.columns(2)
+    with a1.popover("Account", width="stretch"):
+        with st.form("chpw", clear_on_submit=True):
+            cur = st.text_input("Current password", type="password")
+            new1 = st.text_input("New password", type="password")
+            new2 = st.text_input("Confirm new password", type="password")
+            if st.form_submit_button("Change password", type="primary"):
+                if users.verify(USER, cur)[0] is None:
+                    st.error("Current password is wrong.")
+                elif new1 != new2:
+                    st.error("New passwords don't match.")
+                else:
+                    try:
+                        users.set_password(USER, new1)
+                        audit("password_changed", USER)
+                        st.success("Password changed.")
+                    except AuthError as e:
+                        st.error(str(e))
+    if a2.button("Sign out", icon=":material/logout:", width="stretch"):
+        audit("logout", USER)
+        for k in ("auth", "history"):
+            st.session_state.pop(k, None)
+        st.rerun()
     st.toggle("Dark mode", value=DARK, key="dark_toggle", on_change=_toggle_theme)
     st.markdown('<div class="sb-title">Model & retrieval</div>'
                 '<div class="sb-note">Everything runs locally on this machine.</div>', unsafe_allow_html=True)
@@ -269,6 +405,7 @@ with st.sidebar:
 
 store = get_store(config.EMBED_BACKEND, config.EMBED_MODEL)
 pipeline = RAGPipeline(store=store, llm=LLM(backend, model), top_k=top_k, min_similarity=min_sim)
+pipeline.user = USER
 sources = store.sources()
 
 # ------------------------------------------------------------------ hero
@@ -289,9 +426,11 @@ st.markdown(f"""
 </div>
 """, unsafe_allow_html=True)
 
-tab_ask, tab_docs, tab_dash, tab_eval = st.tabs(
-    [":material/forum: Ask", ":material/folder_open: Documents",
-     ":material/monitoring: Dashboard", ":material/fact_check: Evaluation"])
+_tabs = st.tabs([":material/forum: Ask", ":material/folder_open: Documents",
+                 ":material/monitoring: Dashboard", ":material/fact_check: Evaluation"]
+                + ([":material/shield_lock: Security"] if IS_ADMIN else []))
+tab_ask, tab_docs, tab_dash, tab_eval = _tabs[:4]
+tab_sec = _tabs[4] if IS_ADMIN else None
 
 
 # ------------------------------------------------------------------ answer rendering
@@ -367,6 +506,10 @@ def show_answer(ans: Answer, key: str, target=None) -> None:
         if m.get("scope") and m["scope"] != "all":
             pills.append(f'<span class="pill">🔎 {html.escape(m["scope"].replace(",", ", "))}</span>')
         st.markdown('<div class="meta">' + "".join(pills) + "</div>", unsafe_allow_html=True)
+        if m.get("quarantined"):
+            where = ", ".join(f'{q["source"]} p.{q["page"]}' for q in m["quarantined"])
+            st.warning(f"{len(m['quarantined'])} passage(s) were hidden from the model because they contain "
+                       f"instruction-like text (possible prompt injection): {where}", icon=":material/shield:")
         if m.get("unsupported_numbers"):
             st.warning("These numbers were not found in the cited text: " + ", ".join(m["unsupported_numbers"]),
                        icon=":material/report:")
@@ -453,6 +596,7 @@ with tab_ask:
 
 # ------------------------------------------------------------------ Documents
 with tab_docs:
+    show_flash()
     left, right = st.columns([3, 2], gap="large")
     with left:
         st.subheader("Library")
@@ -463,36 +607,57 @@ with tab_docs:
             a.markdown(f'<div class="doc"><div class="ic">PDF</div><div><div class="src-file">'
                        f'{html.escape(name)}</div><div class="src-loc">{n} passages indexed</div></div></div>',
                        unsafe_allow_html=True)
-            if b.button("", key=f"rm_{name}", icon=":material/delete:", help=f"Remove {name} from the index"):
+            if IS_ADMIN and b.button("", key=f"rm_{name}", icon=":material/delete:",
+                                     help=f"Remove {name} from the index"):
                 store.delete_source(name)
+                audit("document_removed", USER, file=name)
                 st.rerun()
     with right:
-        st.subheader("Add documents")
-        files = st.file_uploader("Upload PDFs", type=["pdf"], accept_multiple_files=True,
-                                 label_visibility="collapsed")
-        if files and st.button(f"Index {len(files)} file(s)", type="primary", width="stretch",
-                               icon=":material/upload_file:"):
-            for f in files:
-                dest = config.DOCS_DIR / Path(f.name).name
-                dest.write_bytes(f.getbuffer())
-                with st.spinner(f"Indexing {dest.name}…"):
-                    n = index_pdf(store, dest)
-                if n:
-                    st.toast(f"{dest.name}: {n} passages indexed", icon=":material/check_circle:")
-                else:
-                    st.warning(f"{dest.name}: no text found (scanned PDF? run OCR first)")
-            st.rerun()
-        st.write("")
-        c1, c2 = st.columns(2)
-        if c1.button("Re-index docs/", width="stretch", icon=":material/sync:"):
-            with st.spinner("Indexing…"):
-                res = index_folder(store)
-            st.toast(f"Indexed {len(res)} PDF(s), {sum(res.values())} passages")
-            st.rerun()
-        if c2.button("Reset index", width="stretch", icon=":material/restart_alt:"):
-            store.reset()
-            st.rerun()
-        st.caption("PDFs are stored in the project's `docs/` folder. Scanned PDFs need OCR first.")
+        if not IS_ADMIN:
+            st.subheader("Add documents")
+            st.info("Only admins can add or remove documents.", icon=":material/lock:")
+        else:
+            st.subheader("Add documents")
+            files = st.file_uploader("Upload PDFs", type=["pdf"], accept_multiple_files=True,
+                                     label_visibility="collapsed",
+                                     help=f"PDF only · up to {config.MAX_UPLOAD_MB} MB and {config.MAX_PAGES} pages each")
+            if files and st.button(f"Index {len(files)} file(s)", type="primary", width="stretch",
+                                   icon=":material/upload_file:"):
+                for f in files:
+                    data = f.getvalue()
+                    ok, reason, safe = validate_pdf(data, f.name)
+                    if not ok:
+                        flash("error", f"{f.name}: rejected ({reason}).")
+                        audit("upload_rejected", USER, file=safe, reason=reason)
+                        continue
+                    dest = config.DOCS_DIR / safe
+                    dest.write_bytes(data)
+                    with st.spinner(f"Indexing {safe}…"):
+                        n, flagged = index_pdf_with_report(store, dest)
+                    audit("document_added", USER, file=safe, passages=n, flagged=flagged,
+                          size_kb=round(len(data) / 1024))
+                    if not n:
+                        flash("warning", f"{safe}: no text found (scanned PDF? run OCR first).")
+                    else:
+                        flash("success", f"{safe}: {n} passages indexed.")
+                    if flagged:
+                        flash("warning", f"{safe}: {flagged} passage(s) contain instruction-like text "
+                                         "(possible prompt injection). They will never be shown to the model.")
+                st.rerun()
+            st.write("")
+            c1, c2 = st.columns(2)
+            if c1.button("Re-index docs/", width="stretch", icon=":material/sync:"):
+                with st.spinner("Indexing…"):
+                    res = index_folder(store)
+                audit("reindex", USER, files=len(res))
+                flash("success", f"Indexed {len(res)} PDF(s), {sum(res.values())} passages.")
+                st.rerun()
+            if c2.button("Reset index", width="stretch", icon=":material/restart_alt:"):
+                store.reset()
+                audit("index_reset", USER)
+                st.rerun()
+            st.caption(f"Files are checked before indexing: real PDF, not password-protected, "
+                       f"≤ {config.MAX_UPLOAD_MB} MB, ≤ {config.MAX_PAGES} pages.")
 
 
 # ------------------------------------------------------------------ Dashboard
@@ -559,7 +724,8 @@ with tab_dash:
                 "grounding": st.column_config.ProgressColumn("Grounding", min_value=0, max_value=1, format="percent"),
                 "top_similarity": st.column_config.NumberColumn("Top match", format="%.2f"),
             })
-        if st.button("Clear query log", icon=":material/delete_sweep:"):
+        if IS_ADMIN and st.button("Clear query log", icon=":material/delete_sweep:"):
+            audit("query_log_cleared", USER)
             config.QUERY_LOG.unlink(missing_ok=True)
             st.rerun()
 
@@ -570,7 +736,9 @@ with tab_eval:
     top_l.markdown("Runs every question in `eval/questions.json`. Answerable questions check that the right page "
                    "is retrieved and cited; unanswerable ones check that the assistant **refuses**.")
     if top_r.button("Run evaluation", type="primary", width="stretch", icon=":material/play_arrow:",
-                    disabled=store.count() == 0):
+                    disabled=store.count() == 0 or not IS_ADMIN,
+                    help=None if IS_ADMIN else "Only admins can run the evaluation."):
+        audit("evaluation_run", USER)
         with st.spinner("Running evaluation…"):
             run_eval(pipeline)
     if config.EVAL_RESULTS.exists():
@@ -605,3 +773,106 @@ with tab_eval:
         st.markdown('<div class="empty"><h3>No evaluation run yet</h3>'
                     '<p>Click <b>Run evaluation</b> to score retrieval, citations and refusals.</p></div>',
                     unsafe_allow_html=True)
+
+
+# ------------------------------------------------------------------ Security (admin only)
+if tab_sec is not None:
+    with tab_sec:
+        events = read_audit(limit=1000)
+        now = pd.Timestamp.now(tz="UTC")
+        recent = [e for e in events if (now - pd.Timestamp(e["ts"])) < pd.Timedelta(hours=24)]
+        all_users = users.list_users()
+        qlog = load_query_log()
+        k = st.columns(4)
+        kpi(k[0], "Accounts", f"{len(all_users)}", f"{sum(u['role'] == 'admin' for u in all_users)} admin(s)")
+        kpi(k[1], "Failed sign-ins", f"{sum(e['event'] == 'login_failed' for e in recent)}", "last 24 hours")
+        kpi(k[2], "Locked accounts", f"{sum(u['locked'] for u in all_users)}",
+            f"after {config.LOGIN_MAX_ATTEMPTS} wrong passwords")
+        kpi(k[3], "Injection blocks",
+            f"{int(qlog['quarantined'].sum()) if 'quarantined' in qlog else 0}", "passages hidden from model")
+        st.write("")
+
+        left, right = st.columns([3, 2], gap="large")
+        with left:
+            st.subheader("Users")
+            st.dataframe(pd.DataFrame(all_users), width="stretch", hide_index=True,
+                         column_config={"username": "User", "role": "Role", "created": "Created",
+                                        "last_login": "Last sign-in",
+                                        "locked": st.column_config.CheckboxColumn("Locked")})
+            others = [u["username"] for u in all_users if u["username"] != USER]
+            if others:
+                m1, m2 = st.columns([2, 3], vertical_alignment="bottom")
+                target = m1.selectbox("Manage user", others)
+                b1, b2, b3 = m2.columns(3)
+                if b1.button("Unlock", width="stretch", icon=":material/lock_open:"):
+                    users.unlock(target)
+                    audit("user_unlocked", USER, target=target)
+                    st.rerun()
+                with b2.popover("Reset", icon=":material/password:", width="stretch"):
+                    with st.form("reset_pw", clear_on_submit=True):
+                        npw = st.text_input(f"New password for {target}", type="password")
+                        if st.form_submit_button("Set password", type="primary"):
+                            try:
+                                users.set_password(target, npw)
+                                audit("password_reset", USER, target=target)
+                                st.success("Password updated.")
+                            except AuthError as e:
+                                st.error(str(e))
+                if b3.button("Delete", width="stretch", icon=":material/person_remove:"):
+                    try:
+                        users.delete_user(target)
+                        audit("user_deleted", USER, target=target)
+                        st.rerun()
+                    except AuthError as e:
+                        st.error(str(e))
+        with right:
+            st.subheader("Add a user")
+            with st.form("add_user", clear_on_submit=True):
+                nu = st.text_input("Username", placeholder="lowercase, 3-32 characters")
+                npw = st.text_input("Temporary password", type="password",
+                                    help="At least 8 characters with a letter and a number.")
+                nr = st.selectbox("Role", ROLES, index=1,
+                                  help="viewer: ask questions only · admin: also manage documents and users")
+                if st.form_submit_button("Create user", type="primary", width="stretch",
+                                         icon=":material/person_add:"):
+                    try:
+                        users.add_user(nu, npw, nr)
+                        audit("user_created", USER, target=nu.strip().lower(), role=nr)
+                        st.rerun()
+                    except AuthError as e:
+                        st.error(str(e))
+
+        st.subheader("Protections in place")
+        guards = [
+            ("Sign-in required", "Salted PBKDF2-SHA256 hashes (240k rounds); passwords are never stored."),
+            ("Brute-force lockout", f"{config.LOGIN_MAX_ATTEMPTS} wrong passwords lock the account for "
+                                    f"{config.LOCKOUT_MINUTES} min."),
+            ("Session timeout", f"Signed out after {config.SESSION_TIMEOUT_MINUTES} min of inactivity."),
+            ("Role-based access", "Viewers can only ask questions; admins manage documents and users."),
+            ("Upload checks", f"Real, unencrypted PDFs only · ≤ {config.MAX_UPLOAD_MB} MB · ≤ {config.MAX_PAGES} "
+                              "pages · file names sanitised."),
+            ("Prompt-injection guard", "Passages that try to instruct the model are never sent to it; "
+                                       "sources are fenced as untrusted data." if config.INJECTION_GUARD else "Off"),
+            ("Private logs", "Emails, phone and ID numbers are masked in the query and audit logs."
+             if config.REDACT_LOGS else "Off"),
+            ("Local-only server", "Bound to localhost: other devices on your network can't open the app."),
+            ("XSS-safe rendering", "All document text and answers are HTML-escaped before display."),
+        ]
+        g = st.columns(3)
+        for i, (title, desc) in enumerate(guards):
+            g[i % 3].markdown(f'<div class="guard"><span class="ok">✓</span><div><b>{title}</b>'
+                              f'<small>{desc}</small></div></div>', unsafe_allow_html=True)
+
+        st.subheader("Audit log")
+        if events:
+            adf = pd.DataFrame(events)
+            kinds = sorted(adf["event"].unique())
+            pick = st.multiselect("Show events", kinds, placeholder="All events")
+            if pick:
+                adf = adf[adf["event"].isin(pick)]
+            adf["ts"] = pd.to_datetime(adf["ts"])
+            st.dataframe(adf, width="stretch", hide_index=True,
+                         column_config={"ts": st.column_config.DatetimeColumn("Time", format="DD MMM, HH:mm:ss"),
+                                        "event": "Event", "user": "User"})
+        else:
+            st.caption("No events recorded yet.")

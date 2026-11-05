@@ -28,3 +28,9 @@ toolbarMode = "minimal"
 
 [browser]
 gatherUsageStats = false
+
+[server]
+# Only this computer can open the app (not other devices on your Wi-Fi).
+address = "localhost"
+maxUploadSize = 25
+enableXsrfProtection = true

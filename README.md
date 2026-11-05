@@ -23,6 +23,7 @@ Everything runs on your machine: **ChromaDB** for vectors, **Ollama** for the LL
 | 🔎 **Document filter** | Restrict a question to one or more chosen PDFs. |
 | 📤 **Export** | Download the conversation, with every citation and quoted line, as a PDF report or Markdown. |
 | 🌙 **Dark mode** | One toggle in the sidebar; remembered in the URL (`?theme=dark`). |
+| 🔐 **Security** | Sign-in with hashed passwords, admin/viewer roles, lockout, prompt-injection guard, upload checks, audit log. |
 | 🖥️ **CLI too** | `python cli.py ingest / ask / eval` |
 
 ## 🏗️ Architecture
@@ -50,6 +51,28 @@ flowchart LR
 4. **Number check**: any number in the answer that doesn't appear in the cited text is flagged in the UI.
 5. **Grounding score**: share of the answer's content words found in the text it cites, shown per answer and on the dashboard.
 6. **Line pinpointing**: each cited chunk is narrowed to the specific line(s) that support the sentence, and those lines are highlighted on the rendered PDF page.
+
+## 🔐 Security
+
+| Protection | How it works |
+|---|---|
+| **Sign-in** | First launch asks you to create an admin account. Passwords are stored only as salted PBKDF2-SHA256 hashes (240,000 rounds) in `data/users.json`, which is git-ignored. |
+| **Roles** | `viewer` can ask questions and see the dashboard. `admin` can also add/remove documents, run evaluations, manage users and read the audit log (🛡️ Security tab). |
+| **Brute-force lockout** | 5 wrong passwords lock the account for 5 minutes. An admin can unlock it early. |
+| **Session timeout** | Signed out automatically after 30 minutes of inactivity. |
+| **Prompt-injection guard** | Document passages that try to instruct the model ("ignore previous instructions…") are detected and never sent to the LLM; the UI shows a warning. Sources are also fenced as untrusted data in the prompt. |
+| **Upload checks** | Only real, unencrypted PDFs, max 25 MB / 500 pages; file names are sanitised (no path traversal). |
+| **Private logs** | Emails, phone and ID numbers are masked in the query and audit logs. |
+| **Audit log** | Sign-ins, failed attempts, uploads, deletions, user changes, index resets → `data/audit.jsonl`. |
+| **Local-only server** | `.streamlit/config.toml` binds to `localhost`, so other devices on your network can't open the app. XSRF protection is on. |
+| **XSS-safe rendering** | All document text and model output is HTML-escaped before display. |
+
+Locked out of the admin account? Reset it from a terminal:
+```bash
+python cli.py reset-password suman
+```
+Other accounts can also be created from the terminal: `python cli.py add-user NAME [--admin]`.
+Limits are configurable through environment variables (`RAG_MAX_UPLOAD_MB`, `RAG_LOGIN_MAX_ATTEMPTS`, `RAG_LOCKOUT_MINUTES`, `RAG_SESSION_TIMEOUT_MINUTES`, `RAG_REDACT_LOGS`, `RAG_INJECTION_GUARD`).
 
 ## 🚀 Quick start (Windows)
 
@@ -147,11 +170,13 @@ All settings live in `config.py` and can be overridden with environment variable
 │   ├── pipeline.py        # retrieve -> prompt -> generate -> verify -> pinpoint
 │   ├── highlight.py       # render page PNG with cited lines highlighted
 │   ├── report.py          # export conversation to PDF / Markdown
+│   ├── auth.py            # accounts: hashed passwords, roles, lockout
+│   ├── security.py        # upload checks, injection guard, PII redaction, audit log
 │   └── evaluation.py      # eval runner + query-log analytics
 ├── docs/                  # your PDFs (2 fictional samples included)
 ├── eval/questions.json    # evaluation set
 ├── scripts/make_sample_docs.py
-└── tests/test_pipeline.py # offline tests
+└── tests/                 # offline tests (pipeline + security)
 ```
 
 ## 🛣️ Possible extensions

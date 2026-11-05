@@ -34,5 +34,16 @@ TOP_K = int(os.getenv("RAG_TOP_K", 5))
 # If nothing clears this bar the assistant refuses WITHOUT calling the LLM.
 MIN_SIMILARITY = float(os.getenv("RAG_MIN_SIMILARITY", 0.30))
 
+# --- Security ---------------------------------------------------------------
+USERS_FILE = DATA_DIR / "users.json"          # salted PBKDF2 hashes only, never committed
+AUDIT_LOG = DATA_DIR / "audit.jsonl"
+MAX_UPLOAD_MB = int(os.getenv("RAG_MAX_UPLOAD_MB", 25))
+MAX_PAGES = int(os.getenv("RAG_MAX_PAGES", 500))
+LOGIN_MAX_ATTEMPTS = int(os.getenv("RAG_LOGIN_MAX_ATTEMPTS", 5))
+LOCKOUT_MINUTES = int(os.getenv("RAG_LOCKOUT_MINUTES", 5))
+SESSION_TIMEOUT_MINUTES = int(os.getenv("RAG_SESSION_TIMEOUT_MINUTES", 30))
+REDACT_LOGS = os.getenv("RAG_REDACT_LOGS", "1") != "0"  # mask emails / phone numbers in query log
+INJECTION_GUARD = os.getenv("RAG_INJECTION_GUARD", "1") != "0"
+
 for _d in (DOCS_DIR, DATA_DIR):
     _d.mkdir(parents=True, exist_ok=True)
